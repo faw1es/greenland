@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TARGET_BRANCH: maintenance-sync
+  TARGET_BRANCH: main
 
 jobs:
   generate-and-push:

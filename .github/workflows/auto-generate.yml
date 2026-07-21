@@ -1,14 +1,12 @@
 name: Auto Generate and Push
 
 on:
-  # Bisa dijalankan manual dari tab Actions
   workflow_dispatch:
 
-  # Otomatis 20 kali sehari:
-  # 04.37 sampai 23.37 WITA
   schedule:
-    - cron: "17,32,47 20-23,0-15 * * *"
-      timezone: "Asia/Makassar"
+    # Tiga percobaan per jam, selama jam 01–20 UTC.
+    # Maksimal tetap satu commit untuk setiap jam.
+    - cron: "17,32,47 1-20 * * *"
 
 permissions:
   contents: write
@@ -24,19 +22,45 @@ jobs:
 
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
 
+      - name: Sync latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin main
+
+      - name: Check hourly slot
+        id: slot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Satu slot untuk setiap jam dalam UTC.
+          slot_id=$(date -u +'%Y-%m-%d-%H')
+          marker=".scheduler/${slot_id}.done"
+
+          echo "slot_id=$slot_id" >> "$GITHUB_OUTPUT"
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+
+          if [ -f "$marker" ]; then
+            echo "Sudah ada commit untuk slot $slot_id."
+            echo "should_generate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Belum ada commit untuk slot $slot_id."
+            echo "should_generate=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create random Go project
+        if: steps.slot.outputs.should_generate == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
           random_number=$(shuf -i 100000000-999999999 -n 1)
-
-          # GITHUB_RUN_ID membuat nama folder tetap unik
           folder="generated/${random_number}-${GITHUB_RUN_ID}"
 
           mkdir -p "$folder"
@@ -94,31 +118,36 @@ jobs:
           }
           EOF
 
-          echo "Created: $folder/main.go"
+          marker="${{ steps.slot.outputs.marker }}"
 
-      - name: Commit and push to main
+          mkdir -p "$(dirname "$marker")"
+          printf '%s\n' \
+            "Created by GitHub Actions run ${GITHUB_RUN_ID}" \
+            > "$marker"
+
+          echo "Created: $folder/main.go"
+          echo "Created marker: $marker"
+
+      - name: Commit and push changes
+        if: steps.slot.outputs.should_generate == 'true'
         shell: bash
-        env:
-          TARGET_BRANCH: main
         run: |
           set -euo pipefail
 
           git config user.name "faw1es"
           git config user.email "faiqbw12@gmail.com"
 
-          git add -- generated/
+          git add generated/ .scheduler/
 
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan untuk di-commit."
             exit 0
           fi
 
-          commit_time=$(TZ=Asia/Makassar date +'%Y-%m-%d %H:%M:%S WITA')
+          commit_time=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
 
           git commit -m "chore: scheduled maintenance ${commit_time}"
 
-          # Ambil perubahan terbaru jika main berubah
-          # ketika workflow sedang berjalan
-          git pull --rebase origin "$TARGET_BRANCH"
-
-          git push origin "HEAD:${TARGET_BRANCH}"
+          # Antisipasi branch main berubah selama workflow berjalan.
+          git pull --rebase origin main
+          git push origin HEAD:main

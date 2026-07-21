@@ -1,51 +1,43 @@
 name: Auto Generate and Push
 
 on:
+  # Bisa dijalankan manual dari tab Actions
   workflow_dispatch:
 
+  # Otomatis 20 kali sehari:
+  # 04.37 sampai 23.37 WITA
   schedule:
-    # Berjalan setiap jam 01.00–20.00 UTC
-    - cron: "17 1-20 * * *"
+    - cron: "17 4-23 * * *"
+      timezone: "Asia/Makassar"
 
 permissions:
   contents: write
 
 concurrency:
-  group: auto-generate-push
+  group: auto-generate-push-main
   cancel-in-progress: false
-
-env:
-  TARGET_BRANCH: main
 
 jobs:
   generate-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Checkout main branch
+        uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 0
-
-      - name: Prepare target branch
-        shell: bash
-        run: |
-          git fetch origin "$TARGET_BRANCH" || true
-
-          if git show-ref --verify --quiet \
-            "refs/remotes/origin/$TARGET_BRANCH"; then
-
-            git switch -C "$TARGET_BRANCH" \
-              "origin/$TARGET_BRANCH"
-          else
-            git switch -c "$TARGET_BRANCH"
-          fi
 
       - name: Create random Go project
         shell: bash
         run: |
+          set -euo pipefail
+
           random_number=$(shuf -i 100000000-999999999 -n 1)
-          folder="generated/${random_number}"
+
+          # GITHUB_RUN_ID membuat nama folder tetap unik
+          folder="generated/${random_number}-${GITHUB_RUN_ID}"
 
           mkdir -p "$folder"
 
@@ -98,29 +90,35 @@ jobs:
                   return
               }
 
-              fmt.Println(
-                  "Output telah ditulis ke output.txt",
-              )
+              fmt.Println("Output telah ditulis ke output.txt")
           }
           EOF
 
           echo "Created: $folder/main.go"
 
-      - name: Commit and push changes
+      - name: Commit and push to main
         shell: bash
+        env:
+          TARGET_BRANCH: main
         run: |
-          git config user.name "faw1es"
-          git config user.email \
-            "faiqbw12@gmail.com"
+          set -euo pipefail
 
-          git add generated/
+          git config user.name "faw1es"
+          git config user.email "faiqbw12@gmail.com"
+
+          git add -- generated/
 
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan untuk di-commit."
             exit 0
           fi
 
-          git commit -m \
-            "chore: scheduled maintenance $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          commit_time=$(TZ=Asia/Makassar date +'%Y-%m-%d %H:%M:%S WITA')
 
-          git push -u origin "$TARGET_BRANCH"
+          git commit -m "chore: scheduled maintenance ${commit_time}"
+
+          # Ambil perubahan terbaru jika main berubah
+          # ketika workflow sedang berjalan
+          git pull --rebase origin "$TARGET_BRANCH"
+
+          git push origin "HEAD:${TARGET_BRANCH}"

@@ -7,7 +7,7 @@ on:
   # Otomatis 20 kali sehari:
   # 04.37 sampai 23.37 WITA
   schedule:
-    - cron: "17 4-23 * * *"
+    - cron: "17,32,47 20-23,0-15 * * *"
       timezone: "Asia/Makassar"
 
 permissions:

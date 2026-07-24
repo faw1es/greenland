@@ -1,28 +1,34 @@
-name: Auto Generate and Push
+name: Ensure 20 Daily Commits
 
 on:
   workflow_dispatch:
 
+  # Beberapa kesempatan pemicu dalam sehari.
+  # Satu run yang berhasil sudah cukup untuk mengisi sampai 20 commit.
   schedule:
-    # Tiga percobaan per jam, selama jam 01–20 UTC.
-    # Maksimal tetap satu commit untuk setiap jam.
-    - cron: "17,32,47 1-20 * * *"
+    - cron: "17 0,3,6,9,12,15,18,21 * * *"
+      timezone: "Asia/Jakarta"
 
 permissions:
   contents: write
 
 concurrency:
-  group: auto-generate-push-main
+  group: ensure-20-daily-commits-main
   cancel-in-progress: false
 
+env:
+  TARGET_BRANCH: main
+  TARGET_COMMITS: "20"
+  TIMEZONE: Asia/Jakarta
+
 jobs:
-  generate-and-push:
+  ensure-daily-commits:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -31,47 +37,64 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git pull --rebase origin main
 
-      - name: Check hourly slot
-        id: slot
+          git pull --rebase origin "$TARGET_BRANCH"
+
+      - name: Create missing daily commits
         shell: bash
         run: |
           set -euo pipefail
 
-          # Satu slot untuk setiap jam dalam UTC.
-          slot_id=$(date -u +'%Y-%m-%d-%H')
-          marker=".scheduler/${slot_id}.done"
+          git config user.name "faw1es"
+          git config user.email "faiqbw12@gmail.com"
 
-          echo "slot_id=$slot_id" >> "$GITHUB_OUTPUT"
-          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+          # Tanggal berdasarkan WIB.
+          day=$(TZ="$TIMEZONE" date +'%Y-%m-%d')
 
-          if [ -f "$marker" ]; then
-            echo "Sudah ada commit untuk slot $slot_id."
-            echo "should_generate=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Belum ada commit untuk slot $slot_id."
-            echo "should_generate=true" >> "$GITHUB_OUTPUT"
+          # Folder marker untuk mengetahui jumlah commit otomatis hari ini.
+          marker_dir=".daily-commits/${day}"
+          mkdir -p "$marker_dir"
+
+          existing=$(
+            find "$marker_dir" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.done' |
+            wc -l |
+            tr -d ' '
+          )
+
+          echo "Tanggal            : $day"
+          echo "Commit otomatis ada: $existing"
+          echo "Target commit       : $TARGET_COMMITS"
+
+          if [ "$existing" -ge "$TARGET_COMMITS" ]; then
+            echo "Target 20 commit hari ini sudah tercapai."
+            exit 0
           fi
 
-      - name: Create random Go project
-        if: steps.slot.outputs.should_generate == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
+          for i in $(seq 1 "$TARGET_COMMITS"); do
+            sequence=$(printf '%02d' "$i")
+            marker="${marker_dir}/${sequence}.done"
 
-          random_number=$(shuf -i 100000000-999999999 -n 1)
-          folder="generated/${random_number}-${GITHUB_RUN_ID}"
+            # Lewati nomor commit yang sudah dibuat.
+            if [ -f "$marker" ]; then
+              continue
+            fi
 
-          mkdir -p "$folder"
+            random_number=$(
+              shuf -i 100000000-999999999 -n 1
+            )
 
-          cat > "$folder/main.go" <<'EOF'
+            folder="generated/${day}/${sequence}-${random_number}"
+            mkdir -p "$folder"
+
+            cat > "$folder/main.go" <<EOF
           package main
 
-          import (
-              "fmt"
-              "os"
-          )
+          import "fmt"
+
+          const generatedID = "${GITHUB_RUN_ID}-${sequence}"
 
           func calculateTip(tagihan float64) (float64, float64) {
               var tipRate float64
@@ -89,65 +112,48 @@ jobs:
           }
 
           func main() {
-              var tagihan float64
-
-              fmt.Print("Masukkan nilai tagihan: ")
-              fmt.Scan(&tagihan)
+              tagihan := 200.0
 
               tip, total := calculateTip(tagihan)
 
-              outputText := fmt.Sprintf(
-                  "Tagihannya: Rp. %.2f\nTipnya: Rp. %.2f\nTotal nilainya: Rp. %.2f\n",
+              fmt.Printf(
+                  "ID: %s\nTagihan: Rp. %.2f\nTip: Rp. %.2f\nTotal: Rp. %.2f\n",
+                  generatedID,
                   tagihan,
                   tip,
                   total,
               )
-
-              err := os.WriteFile(
-                  "output.txt",
-                  []byte(outputText),
-                  0644,
-              )
-
-              if err != nil {
-                  fmt.Println("Error:", err)
-                  return
-              }
-
-              fmt.Println("Output telah ditulis ke output.txt")
           }
           EOF
 
-          marker="${{ steps.slot.outputs.marker }}"
+            printf '%s\n' \
+              "Generated commit ${sequence}/${TARGET_COMMITS}" \
+              "Date: ${day}" \
+              "Run ID: ${GITHUB_RUN_ID}" \
+              > "$marker"
 
-          mkdir -p "$(dirname "$marker")"
-          printf '%s\n' \
-            "Created by GitHub Actions run ${GITHUB_RUN_ID}" \
-            > "$marker"
+            git add \
+              "$folder/main.go" \
+              "$marker"
 
-          echo "Created: $folder/main.go"
-          echo "Created marker: $marker"
+            commit_time=$(
+              TZ="$TIMEZONE" date --iso-8601=seconds
+            )
 
-      - name: Commit and push changes
-        if: steps.slot.outputs.should_generate == 'true'
+            GIT_AUTHOR_DATE="$commit_time" \
+            GIT_COMMITTER_DATE="$commit_time" \
+              git commit -m \
+                "chore: daily generated item ${sequence}/${TARGET_COMMITS} (${day})"
+
+            echo "Created commit ${sequence}/${TARGET_COMMITS}"
+          done
+
+      - name: Push commits to main
         shell: bash
         run: |
           set -euo pipefail
 
-          git config user.name "faw1es"
-          git config user.email "faiqbw12@gmail.com"
+          # Antisipasi perubahan lain di main saat workflow berjalan.
+          git pull --rebase origin "$TARGET_BRANCH"
 
-          git add generated/ .scheduler/
-
-          if git diff --cached --quiet; then
-            echo "Tidak ada perubahan untuk di-commit."
-            exit 0
-          fi
-
-          commit_time=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
-
-          git commit -m "chore: scheduled maintenance ${commit_time}"
-
-          # Antisipasi branch main berubah selama workflow berjalan.
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git push origin "HEAD:${TARGET_BRANCH}"
